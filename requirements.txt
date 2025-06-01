@@ -6,3 +6,4 @@ numpy==1.25.2
 python-multipart==0.0.6
 aiohttp==3.9.1
 asyncio-throttle==1.0.2
+flask-cors==4.0.0
