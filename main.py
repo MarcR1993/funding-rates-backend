@@ -1,10 +1,7 @@
 """
-🚀 Backend Flask pour Funding Rates - VERSION FINALE
-Features:
-- Données live CCXT de 6 exchanges
-- Horaires funding rates (8h intervals)
-- Signaux arbitrage avec timing d'entrée/sortie
-- Cache intelligent avec auto-refresh
+🚀 Backend Flask pour Funding Rates - VERSION 3 EXCHANGES
+Optimisé pour: Binance, KuCoin, Bybit
+Plus rapide et plus stable
 """
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -27,25 +24,39 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app, origins=["*"])
 
-logger.info("🚀 Starting FINAL Funding Rates API with Live Data...")
+logger.info("🚀 Starting 3-Exchange Funding Rates API (Binance, KuCoin, Bybit)...")
 
-# Configuration exchanges
+# Configuration exchanges - SEULEMENT 3 EXCHANGES FIABLES
 EXCHANGES_CONFIG = {
-    'binance': ccxt.binance({'enableRateLimit': True, 'sandbox': False}),
-    'bybit': ccxt.bybit({'enableRateLimit': True, 'sandbox': False}),
-    'okx': ccxt.okx({'enableRateLimit': True, 'sandbox': False}),
-    'gate': ccxt.gate({'enableRateLimit': True, 'sandbox': False}),
-    'bitget': ccxt.bitget({'enableRateLimit': True, 'sandbox': False}),
-    'coinex': ccxt.coinex({'enableRateLimit': True, 'sandbox': False})
+    'binance': ccxt.binance({
+        'enableRateLimit': True, 
+        'sandbox': False,
+        'timeout': 20000,
+        'rateLimit': 1200
+    }),
+    'kucoin': ccxt.kucoin({
+        'enableRateLimit': True, 
+        'sandbox': False,
+        'timeout': 20000,
+        'rateLimit': 1000
+    }),
+    'bybit': ccxt.bybit({
+        'enableRateLimit': True, 
+        'sandbox': False,
+        'timeout': 20000,
+        'rateLimit': 1000
+    })
 }
 
-# Symboles principaux à surveiller
+# Symboles ciblés - Plus large sélection
 TARGET_SYMBOLS = [
     'BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 
     'DOGE/USDT:USDT', 'ADA/USDT:USDT', 'AVAX/USDT:USDT', 'MATIC/USDT:USDT',
     'LINK/USDT:USDT', 'DOT/USDT:USDT', 'UNI/USDT:USDT', 'ATOM/USDT:USDT',
     'FIL/USDT:USDT', 'LTC/USDT:USDT', 'BCH/USDT:USDT', 'ETC/USDT:USDT',
-    'NEAR/USDT:USDT', 'FTM/USDT:USDT', 'SAND/USDT:USDT', 'MANA/USDT:USDT'
+    'NEAR/USDT:USDT', 'FTM/USDT:USDT', 'SAND/USDT:USDT', 'MANA/USDT:USDT',
+    'ICP/USDT:USDT', 'AAVE/USDT:USDT', 'CRV/USDT:USDT', 'SUSHI/USDT:USDT',
+    'COMP/USDT:USDT', 'YFI/USDT:USDT', 'SNX/USDT:USDT', 'MKR/USDT:USDT'
 ]
 
 # Variables globales
@@ -53,7 +64,6 @@ funding_data_cache = []
 arbitrage_opportunities = []
 last_update = None
 exchange_status = {}
-next_funding_times = {}
 
 def get_next_funding_time():
     """Calcule le prochain horaire de funding rate (toutes les 8h)"""
@@ -85,80 +95,146 @@ def time_until_funding():
         'total_minutes': int(delta.total_seconds() // 60)
     }
 
-async def fetch_funding_rate(exchange_name, exchange, symbol):
-    """Récupère le funding rate d'un exchange pour un symbole"""
+async def fetch_funding_rate_safe(exchange_name, exchange, symbol):
+    """Récupère le funding rate avec gestion d'erreurs robuste"""
     try:
-        if hasattr(exchange, 'fetch_funding_rate'):
-            funding = await exchange.fetch_funding_rate(symbol)
-            rate = funding.get('fundingRate')
-            
-            if rate is not None:
-                logger.info(f"✅ {exchange_name}: {symbol} = {rate:.6f}")
-                return {
-                    'symbol': symbol,
-                    'exchange': exchange_name,
-                    'fundingRate': float(rate),
-                    'timestamp': datetime.utcnow().isoformat() + 'Z'
-                }
+        # Vérifier si l'exchange supporte fetch_funding_rate
+        if not hasattr(exchange, 'fetch_funding_rate'):
+            logger.warning(f"⚠️ {exchange_name} doesn't support fetch_funding_rate")
+            return None
         
+        # Timeout personnalisé pour chaque exchange
+        funding = await asyncio.wait_for(
+            exchange.fetch_funding_rate(symbol), 
+            timeout=15
+        )
+        
+        rate = funding.get('fundingRate')
+        
+        if rate is not None and isinstance(rate, (int, float)):
+            logger.info(f"✅ {exchange_name}: {symbol} = {rate:.6f}")
+            return {
+                'symbol': symbol,
+                'exchange': exchange_name,
+                'fundingRate': float(rate),
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+        else:
+            logger.warning(f"⚠️ {exchange_name} {symbol}: Invalid rate data")
+            return None
+        
+    except asyncio.TimeoutError:
+        logger.warning(f"⏰ {exchange_name} {symbol}: Timeout")
         return None
+    except Exception as e:
+        error_msg = str(e)[:100]
+        logger.warning(f"⚠️ {exchange_name} {symbol}: {error_msg}")
+        return None
+
+async def fetch_exchange_data(exchange_name, exchange):
+    """Récupère toutes les données d'un exchange"""
+    logger.info(f"📊 Fetching from {exchange_name}...")
+    
+    exchange_rates = []
+    errors = 0
+    
+    try:
+        # Charger les markets avec timeout
+        markets = await asyncio.wait_for(exchange.load_markets(), timeout=20)
+        available_symbols = [s for s in TARGET_SYMBOLS if s in markets]
+        
+        logger.info(f"📋 {exchange_name}: {len(available_symbols)} symbols available")
+        
+        # Limiter à 20 symboles pour éviter les rate limits
+        limited_symbols = available_symbols[:20]
+        
+        # Fetch avec semaphore pour limiter la concurrence
+        semaphore = asyncio.Semaphore(3)  # Max 3 requêtes simultanées
+        
+        async def fetch_with_semaphore(symbol):
+            async with semaphore:
+                return await fetch_funding_rate_safe(exchange_name, exchange, symbol)
+        
+        # Lancer toutes les requêtes
+        tasks = [fetch_with_semaphore(symbol) for symbol in limited_symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Traiter les résultats
+        for result in results:
+            if isinstance(result, dict) and result is not None:
+                exchange_rates.append(result)
+            elif isinstance(result, Exception):
+                errors += 1
+            else:
+                errors += 1
+        
+        success_count = len(exchange_rates)
+        logger.info(f"✅ {exchange_name}: {success_count} rates fetched, {errors} errors")
+        
+        return exchange_rates, {
+            'status': 'success',
+            'count': success_count,
+            'errors': errors,
+            'last_update': datetime.utcnow().isoformat() + 'Z'
+        }
         
     except Exception as e:
-        logger.warning(f"⚠️ {exchange_name} {symbol}: {str(e)[:100]}")
-        return None
+        logger.error(f"❌ {exchange_name} failed completely: {e}")
+        return [], {
+            'status': 'error',
+            'count': 0,
+            'errors': 1,
+            'error_message': str(e)[:200],
+            'last_update': datetime.utcnow().isoformat() + 'Z'
+        }
 
 async def fetch_all_funding_rates():
     """Récupère tous les funding rates de tous les exchanges"""
     global funding_data_cache, last_update, exchange_status
     
-    logger.info("📡 Fetching funding rates from all exchanges...")
+    logger.info("📡 Fetching funding rates from 3 exchanges...")
     start_time = time.time()
     
     all_rates = []
     exchange_status = {}
     
-    # Pour chaque exchange
+    # Fetch chaque exchange en parallèle
+    tasks = []
     for exchange_name, exchange in EXCHANGES_CONFIG.items():
-        exchange_status[exchange_name] = {'status': 'fetching', 'count': 0, 'errors': 0}
+        task = fetch_exchange_data(exchange_name, exchange)
+        tasks.append((exchange_name, task))
+    
+    # Attendre tous les résultats avec timeout global
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*[task for _, task in tasks], return_exceptions=True),
+            timeout=60  # 1 minute max pour tout
+        )
         
-        try:
-            logger.info(f"📊 Fetching from {exchange_name}...")
-            
-            # Récupérer les markets une fois
-            markets = await exchange.load_markets()
-            available_symbols = [s for s in TARGET_SYMBOLS if s in markets]
-            
-            logger.info(f"📋 {exchange_name}: {len(available_symbols)} symbols available")
-            
-            # Fetch funding rates avec limite
-            exchange_rates = []
-            for symbol in available_symbols[:15]:  # Limite à 15 symboles par exchange
-                rate_data = await fetch_funding_rate(exchange_name, exchange, symbol)
-                if rate_data:
-                    exchange_rates.append(rate_data)
-                
-                # Petit délai pour éviter les rate limits
-                await asyncio.sleep(0.1)
-            
-            all_rates.extend(exchange_rates)
-            exchange_status[exchange_name] = {
-                'status': 'success',
-                'count': len(exchange_rates),
-                'errors': 0,
-                'last_update': datetime.utcnow().isoformat() + 'Z'
-            }
-            
-            logger.info(f"✅ {exchange_name}: {len(exchange_rates)} rates fetched")
-            
-        except Exception as e:
-            logger.error(f"❌ {exchange_name} failed: {e}")
-            exchange_status[exchange_name] = {
-                'status': 'error',
-                'count': 0,
-                'errors': 1,
-                'error_message': str(e)[:200],
-                'last_update': datetime.utcnow().isoformat() + 'Z'
-            }
+        # Traiter les résultats
+        for (exchange_name, _), result in zip(tasks, results):
+            if isinstance(result, tuple):
+                rates, status = result
+                all_rates.extend(rates)
+                exchange_status[exchange_name] = status
+            else:
+                logger.error(f"❌ {exchange_name}: {result}")
+                exchange_status[exchange_name] = {
+                    'status': 'error',
+                    'count': 0,
+                    'errors': 1,
+                    'error_message': str(result)[:200]
+                }
+        
+    except asyncio.TimeoutError:
+        logger.error("❌ Global timeout reached (60s)")
+        for exchange_name in EXCHANGES_CONFIG.keys():
+            if exchange_name not in exchange_status:
+                exchange_status[exchange_name] = {
+                    'status': 'timeout',
+                    'count': 0,
+                    'errors': 1
+                }
     
     funding_data_cache = all_rates
     last_update = datetime.utcnow()
@@ -166,11 +242,11 @@ async def fetch_all_funding_rates():
     duration = time.time() - start_time
     logger.info(f"🎉 Fetched {len(all_rates)} total rates in {duration:.1f}s")
     
-    # Calculer les arbitrages après avoir récupéré les données
+    # Calculer les arbitrages
     calculate_arbitrage_opportunities()
 
 def calculate_arbitrage_opportunities():
-    """Calcule les opportunités d'arbitrage entre exchanges"""
+    """Calcule les opportunités d'arbitrage entre les 3 exchanges"""
     global arbitrage_opportunities
     
     logger.info("🔍 Calculating arbitrage opportunities...")
@@ -193,12 +269,12 @@ def calculate_arbitrage_opportunities():
         
         divergence = max_rate['fundingRate'] - min_rate['fundingRate']
         
-        # Seuil minimal pour considérer comme arbitrage (0.01% = 0.0001)
-        if abs(divergence) > 0.0001:
+        # Seuil minimal pour considérer comme arbitrage (0.005% = 0.00005)
+        if abs(divergence) > 0.00005:
             
             # Calcul des revenus estimés
-            commission_long = 0.0005  # 0.05% commission moyenne long
-            commission_short = 0.0005  # 0.05% commission moyenne short
+            commission_long = 0.0004   # 0.04% Binance/Bybit maker
+            commission_short = 0.0004  # 0.04% commission moyenne
             total_commission = commission_long + commission_short
             
             # Revenue net sur 8h (1 période de funding)
@@ -207,67 +283,68 @@ def calculate_arbitrage_opportunities():
             # Revenue annualisé (3 fois par jour * 365 jours)
             revenue_annual = revenue_8h * 3 * 365 * 100  # En pourcentage
             
-            # Déterminer la stratégie optimale
-            if divergence > 0:
-                # Long sur l'exchange avec rate faible, Short sur l'exchange avec rate élevé
-                strategy = "Long/Short"
-                long_exchange = min_rate['exchange']
-                short_exchange = max_rate['exchange']
-                long_rate = min_rate['fundingRate']
-                short_rate = max_rate['fundingRate']
-            else:
-                # Inverse si divergence négative
-                strategy = "Short/Long"
-                long_exchange = max_rate['exchange']
-                short_exchange = min_rate['exchange']
-                long_rate = max_rate['fundingRate']
-                short_rate = min_rate['fundingRate']
-            
-            # Timing optimal
-            funding_info = time_until_funding()
-            
-            # Signal d'entrée/sortie
-            if funding_info['total_minutes'] > 30:
-                signal = "🟢 ENTRER MAINTENANT"
-                signal_detail = f"Ouvrir position {funding_info['hours_remaining']}h{funding_info['minutes_remaining']}m avant funding"
-            elif funding_info['total_minutes'] > 5:
-                signal = "🟡 ENTRER BIENTÔT"
-                signal_detail = f"Position à ouvrir dans {funding_info['minutes_remaining']}m"
-            else:
-                signal = "🔴 SORTIR"
-                signal_detail = "Fermer position avant funding dans <5min"
-            
-            opportunity = {
-                'symbol': symbol.split('/')[0],  # Juste BTC au lieu de BTC/USDT:USDT
-                'strategy': strategy,
-                'longExchange': long_exchange,
-                'shortExchange': short_exchange,
-                'longRate': round(long_rate, 6),
-                'shortRate': round(short_rate, 6),
-                'divergence': round(abs(divergence), 6),
-                'divergence_pct': round(abs(divergence) * 100, 4),
-                'commission': round(total_commission, 6),
-                'revenue_8h': round(revenue_8h, 6),
-                'revenue_8h_pct': round(revenue_8h * 100, 4),
-                'revenue_annual_pct': round(revenue_annual, 2),
-                'signal': signal,
-                'signal_detail': signal_detail,
-                'next_funding_utc': funding_info['next_funding_utc'],
-                'minutes_to_funding': funding_info['total_minutes'],
-                'timestamp': datetime.utcnow().isoformat() + 'Z'
-            }
-            
-            opportunities.append(opportunity)
+            # Only show profitable opportunities
+            if revenue_annual > 1:  # Au moins 1% annuel
+                
+                # Déterminer la stratégie optimale
+                if divergence > 0:
+                    strategy = "Long/Short"
+                    long_exchange = min_rate['exchange']
+                    short_exchange = max_rate['exchange']
+                    long_rate = min_rate['fundingRate']
+                    short_rate = max_rate['fundingRate']
+                else:
+                    strategy = "Short/Long"
+                    long_exchange = max_rate['exchange']
+                    short_exchange = min_rate['exchange']
+                    long_rate = max_rate['fundingRate']
+                    short_rate = min_rate['fundingRate']
+                
+                # Timing optimal
+                funding_info = time_until_funding()
+                
+                # Signal d'entrée/sortie
+                if funding_info['total_minutes'] > 30:
+                    signal = "🟢 ENTRER MAINTENANT"
+                    signal_detail = f"Ouvrir position {funding_info['hours_remaining']}h{funding_info['minutes_remaining']}m avant funding"
+                elif funding_info['total_minutes'] > 5:
+                    signal = "🟡 ENTRER BIENTÔT"
+                    signal_detail = f"Position à ouvrir dans {funding_info['minutes_remaining']}m"
+                else:
+                    signal = "🔴 SORTIR"
+                    signal_detail = "Fermer position avant funding dans <5min"
+                
+                opportunity = {
+                    'symbol': symbol.split('/')[0],
+                    'strategy': strategy,
+                    'longExchange': long_exchange,
+                    'shortExchange': short_exchange,
+                    'longRate': round(long_rate, 6),
+                    'shortRate': round(short_rate, 6),
+                    'divergence': round(abs(divergence), 6),
+                    'divergence_pct': round(abs(divergence) * 100, 4),
+                    'commission': round(total_commission, 6),
+                    'revenue_8h': round(revenue_8h, 6),
+                    'revenue_8h_pct': round(revenue_8h * 100, 4),
+                    'revenue_annual_pct': round(revenue_annual, 2),
+                    'signal': signal,
+                    'signal_detail': signal_detail,
+                    'next_funding_utc': funding_info['next_funding_utc'],
+                    'minutes_to_funding': funding_info['total_minutes'],
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                }
+                
+                opportunities.append(opportunity)
     
     # Trier par revenue décroissant
     opportunities.sort(key=lambda x: x['revenue_annual_pct'], reverse=True)
-    arbitrage_opportunities = opportunities[:20]  # Top 20
+    arbitrage_opportunities = opportunities[:15]  # Top 15
     
-    logger.info(f"💰 Found {len(arbitrage_opportunities)} arbitrage opportunities")
+    logger.info(f"💰 Found {len(arbitrage_opportunities)} profitable arbitrage opportunities")
 
 def background_updater():
-    """Met à jour les données en arrière-plan"""
-    logger.info("🔄 Background updater started")
+    """Met à jour les données toutes les 3 minutes"""
+    logger.info("🔄 Background updater started (3-minute intervals)")
     
     while True:
         try:
@@ -279,11 +356,12 @@ def background_updater():
             
             # Fetch des données
             loop.run_until_complete(fetch_all_funding_rates())
+            loop.close()
             
             logger.info(f"✅ Background update completed - {len(funding_data_cache)} rates cached")
             
-            # Attendre 5 minutes avant la prochaine mise à jour
-            time.sleep(300)
+            # Attendre 3 minutes avant la prochaine mise à jour
+            time.sleep(180)
             
         except Exception as e:
             logger.error(f"❌ Background update failed: {e}")
@@ -302,20 +380,20 @@ def after_request(response):
 def home():
     return jsonify({
         'status': 'online',
-        'service': 'Funding Rates API - FINAL VERSION',
-        'version': '3.0-live',
+        'service': 'Funding Rates API - 3 EXCHANGES',
+        'version': '4.0-optimized',
+        'exchanges': ['Binance', 'KuCoin', 'Bybit'],
         'features': [
-            'Live funding rates from 6 exchanges',
-            'Arbitrage opportunities with entry/exit signals',
-            'Funding schedule (every 8h)',
-            'Auto-refresh every 5 minutes'
+            'Optimized for 3 major exchanges',
+            'Faster data collection (3min updates)',
+            'Robust error handling',
+            'Profitable arbitrage detection'
         ],
-        'exchanges': list(EXCHANGES_CONFIG.keys()),
         'funding_schedule': '00:00, 08:00, 16:00 UTC',
         'next_funding': time_until_funding(),
         'endpoints': {
             '/api/funding-rates': 'GET - All funding rates',
-            '/api/arbitrage': 'GET - Arbitrage opportunities with signals',
+            '/api/arbitrage': 'GET - Profitable arbitrage opportunities',
             '/api/status': 'GET - Service status',
             '/health': 'GET - Health check'
         },
@@ -334,13 +412,14 @@ def get_status():
     return jsonify({
         'status': 'online',
         'service': 'Funding Rates API',
-        'version': '3.0-live',
+        'version': '4.0-optimized',
         'last_update': last_update.isoformat() + 'Z' if last_update else None,
         'cached_rates_count': len(funding_data_cache),
         'arbitrage_opportunities_count': len(arbitrage_opportunities),
         'exchange_status': exchange_status,
         'next_funding': time_until_funding(),
-        'supported_exchanges': list(EXCHANGES_CONFIG.keys()),
+        'supported_exchanges': ['binance', 'kucoin', 'bybit'],
+        'update_interval': '3 minutes',
         'timestamp': datetime.utcnow().isoformat() + 'Z'
     })
 
@@ -355,7 +434,7 @@ def get_funding_rates():
         'last_update': last_update.isoformat() + 'Z' if last_update else None,
         'next_funding': time_until_funding(),
         'exchange_status': exchange_status,
-        'message': 'Live funding rates data',
+        'message': f'Live data from {len(EXCHANGES_CONFIG)} exchanges',
         'timestamp': datetime.utcnow().isoformat() + 'Z'
     })
 
@@ -370,7 +449,8 @@ def get_arbitrage():
         'last_update': last_update.isoformat() + 'Z' if last_update else None,
         'next_funding': time_until_funding(),
         'funding_schedule': '00:00, 08:00, 16:00 UTC',
-        'message': 'Live arbitrage opportunities with entry/exit signals',
+        'exchanges': ['Binance', 'KuCoin', 'Bybit'],
+        'message': 'Profitable arbitrage opportunities between 3 exchanges',
         'timestamp': datetime.utcnow().isoformat() + 'Z'
     })
 
@@ -384,12 +464,11 @@ def not_found(error):
     }), 404
 
 if __name__ == '__main__':
-    logger.info("🌐 Starting Flask server...")
+    logger.info("🌐 Starting optimized Flask server...")
     
     # Initialiser les exchanges
     for name, exchange in EXCHANGES_CONFIG.items():
         try:
-            # Test de connectivité basique
             logger.info(f"✅ {name} initialized")
             exchange_status[name] = {'status': 'initialized'}
         except Exception as e:
@@ -400,12 +479,13 @@ if __name__ == '__main__':
     update_thread = threading.Thread(target=background_updater, daemon=True)
     update_thread.start()
     
-    # Faire un premier fetch synchrone pour avoir des données immédiatement
+    # Premier fetch synchrone
     logger.info("📊 Performing initial data fetch...")
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(fetch_all_funding_rates())
+        loop.close()
         logger.info(f"✅ Initial fetch completed - {len(funding_data_cache)} rates loaded")
     except Exception as e:
         logger.error(f"❌ Initial fetch failed: {e}")
