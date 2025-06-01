@@ -113,14 +113,197 @@ def fetch_coinglass_funding_overview():
         logger.error(f"❌ CoinGlass overview error: {e}")
         return None
 
-def fetch_coinglass_funding_rates():
-    """Récupère les funding rates détaillés de CoinGlass"""
+def fetch_binance_funding_direct():
+    """Récupère les funding rates directement de Binance"""
     try:
+        # Endpoint Binance direct
+        url = "https://fapi.binance.com/fapi/v1/fundingRate"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        logger.info("📡 Fetching Binance funding rates direct...")
+        
+        response = requests.get(url, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            
+            for item in data[-50:]:  # 50 derniers
+                symbol = item.get('symbol', '')
+                funding_rate = item.get('fundingRate')
+                funding_time = item.get('fundingTime')
+                
+                if symbol.endswith('USDT') and funding_rate:
+                    clean_symbol = symbol.replace('USDT', '') + '/USDT:USDT'
+                    
+                    results.append({
+                        'symbol': clean_symbol,
+                        'exchange': 'binance',
+                        'fundingRate': float(funding_rate),
+                        'fundingTime': funding_time,
+                        'timestamp': datetime.utcnow().isoformat() + 'Z'
+                    })
+            
+            logger.info(f"✅ Binance direct: {len(results)} funding rates")
+            return results
+            
+        else:
+            logger.error(f"❌ Binance direct failed: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"❌ Binance direct error: {e}")
+        return []
+
+def fetch_bybit_funding_direct():
+    """Récupère les funding rates directement de Bybit"""
+    try:
+        url = "https://api.bybit.com/v5/market/funding/history"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+        
+        results = []
+        
+        # Test quelques symboles populaires
+        test_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT']
+        
+        for symbol in test_symbols:
+            try:
+                params = {
+                    'category': 'linear',
+                    'symbol': symbol,
+                    'limit': 1
+                }
+                
+                logger.info(f"📡 Fetching Bybit {symbol} funding rate...")
+                
+                response = requests.get(url, params=params, headers=headers, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'result' in data and 'list' in data['result']:
+                        for item in data['result']['list']:
+                            funding_rate = item.get('fundingRate')
+                            funding_time = item.get('fundingRateTimestamp')
+                            
+                            if funding_rate:
+                                clean_symbol = symbol.replace('USDT', '') + '/USDT:USDT'
+                                
+                                results.append({
+                                    'symbol': clean_symbol,
+                                    'exchange': 'bybit',
+                                    'fundingRate': float(funding_rate),
+                                    'fundingTime': funding_time,
+                                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                                })
+                
+                time.sleep(0.3)  # Délai entre symboles
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Bybit {symbol} error: {e}")
+                continue
+        
+        logger.info(f"✅ Bybit direct: {len(results)} funding rates")
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Bybit direct error: {e}")
+        return []
+
+def fetch_okx_funding_direct():
+    """Récupère les funding rates directement d'OKX"""
+    try:
+        url = "https://www.okx.com/api/v5/public/funding-rate"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+        }
+        
+        logger.info("📡 Fetching OKX funding rates direct...")
+        
+        # Test quelques instruments populaires
+        test_instruments = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'XRP-USDT-SWAP']
+        results = []
+        
+        for inst_id in test_instruments:
+            try:
+                params = {'instId': inst_id}
+                
+                response = requests.get(url, params=params, headers=headers, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'data' in data:
+                        for item in data['data']:
+                            funding_rate = item.get('fundingRate')
+                            funding_time = item.get('fundingTime')
+                            
+                            if funding_rate:
+                                # Convertir BTC-USDT-SWAP en BTC/USDT:USDT
+                                symbol_part = inst_id.replace('-USDT-SWAP', '')
+                                clean_symbol = symbol_part + '/USDT:USDT'
+                                
+                                results.append({
+                                    'symbol': clean_symbol,
+                                    'exchange': 'okx',
+                                    'fundingRate': float(funding_rate),
+                                    'fundingTime': funding_time,
+                                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                                })
+                
+                time.sleep(0.3)  # Délai entre symboles
+                
+            except Exception as e:
+                logger.warning(f"⚠️ OKX {inst_id} error: {e}")
+                continue
+        
+        logger.info(f"✅ OKX direct: {len(results)} funding rates")
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ OKX direct error: {e}")
+        return []
+
+def fetch_coinglass_funding_rates():
+    """Récupère les funding rates - VERSION HYBRIDE avec tests directs"""
+    try:
+        logger.info("🧪 Testing DIRECT exchange APIs first...")
+        
+        all_results = []
+        
+        # Test 1: Binance direct
+        binance_results = fetch_binance_funding_direct()
+        all_results.extend(binance_results)
+        
+        # Test 2: Bybit direct  
+        bybit_results = fetch_bybit_funding_direct()
+        all_results.extend(bybit_results)
+        
+        # Test 3: OKX direct
+        okx_results = fetch_okx_funding_direct()
+        all_results.extend(okx_results)
+        
+        logger.info(f"✅ DIRECT APIs: Total {len(all_results)} funding rates fetched")
+        
+        # Si on a des données, les retourner
+        if all_results:
+            return all_results
+        
+        # Sinon, fallback vers CoinGlass (méthode originale)
+        logger.info("⚠️ Direct APIs failed, trying CoinGlass fallback...")
+        
         config = COINGLASS_CONFIG
         results = []
         
         # Pour chaque symbole principal
-        for symbol in TARGET_SYMBOLS:
+        for symbol in TARGET_SYMBOLS[:5]:  # Limiter à 5 pour test
             try:
                 url = f"{config['base_url']}{config['endpoints']['funding_rates']}"
                 
@@ -130,7 +313,7 @@ def fetch_coinglass_funding_rates():
                     'interval': '8h'
                 }
                 
-                logger.info(f"📡 Fetching {symbol} funding rates...")
+                logger.info(f"📡 Fetching {symbol} from CoinGlass...")
                 
                 response = requests.get(
                     url,
@@ -141,6 +324,7 @@ def fetch_coinglass_funding_rates():
                 
                 if response.status_code == 200:
                     data = response.json()
+                    logger.info(f"📦 CoinGlass {symbol} response: {data}")
                     
                     # Traiter les données CoinGlass
                     if 'data' in data and isinstance(data['data'], list):
@@ -162,20 +346,20 @@ def fetch_coinglass_funding_rates():
                     logger.info(f"✅ {symbol}: {len([r for r in results if symbol in r['symbol']])} rates")
                     
                 else:
-                    logger.warning(f"⚠️ {symbol} failed: {response.status_code}")
+                    logger.warning(f"⚠️ CoinGlass {symbol} failed: {response.status_code}")
                 
                 # Délai entre les requêtes
-                time.sleep(0.5)
+                time.sleep(1)
                 
             except Exception as e:
-                logger.warning(f"⚠️ {symbol} error: {e}")
+                logger.warning(f"⚠️ CoinGlass {symbol} error: {e}")
                 continue
         
-        logger.info(f"✅ CoinGlass: Total {len(results)} funding rates fetched")
+        logger.info(f"✅ CoinGlass fallback: Total {len(results)} funding rates fetched")
         return results
         
     except Exception as e:
-        logger.error(f"❌ CoinGlass funding rates error: {e}")
+        logger.error(f"❌ All funding rates methods failed: {e}")
         return []
 
 def fetch_coinglass_arbitrage_data():
@@ -409,6 +593,10 @@ def background_updater():
             logger.error(f"❌ CoinGlass background update failed: {e}")
             time.sleep(60)  # Retry dans 1 minute
 
+# Variables pour les signaux de trading
+trading_signals = []
+webhook_auth_key = "YOUR_SECRET_KEY_2024"  # Changez ceci !
+
 # Routes Flask
 @app.after_request
 def after_request(response):
@@ -416,6 +604,367 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Headers', '*')
     response.headers.add('Access-Control-Allow-Methods', '*')
     return response
+
+@app.route('/webhook/tradingview', methods=['POST'])
+def tradingview_webhook():
+    """Reçoit les signaux de TradingView via webhook"""
+    try:
+        # Vérifier l'authentification
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No JSON data received'}), 400
+        
+        # Vérifier la clé d'authentification
+        auth_key = data.get('auth_key', '')
+        if auth_key != webhook_auth_key:
+            logger.warning(f"❌ Webhook auth failed: {auth_key}")
+            return jsonify({'error': 'Invalid auth key'}), 401
+        
+        # Extraire les données du signal
+        signal_data = {
+            'symbol': data.get('symbol', ''),
+            'action': data.get('action', ''),  # BUY/SELL/CLOSE
+            'exchange_long': data.get('exchange_long', ''),
+            'exchange_short': data.get('exchange_short', ''),
+            'quantity': data.get('quantity', 0),
+            'strategy': data.get('strategy', 'arbitrage'),
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'tradingview_data': data
+        }
+        
+        # Valider le signal
+        if not signal_data['symbol'] or not signal_data['action']:
+            return jsonify({'error': 'Missing required fields: symbol, action'}), 400
+        
+        # Stocker le signal
+        trading_signals.append(signal_data)
+        
+        # Garder seulement les 100 derniers signaux
+        if len(trading_signals) > 100:
+            trading_signals.pop(0)
+        
+        logger.info(f"📥 TradingView signal received: {signal_data['action']} {signal_data['symbol']}")
+        
+        # Traiter le signal d'arbitrage
+        if signal_data['strategy'] == 'arbitrage':
+            result = process_arbitrage_signal(signal_data)
+            return jsonify({
+                'status': 'success',
+                'message': 'Signal received and processed',
+                'signal_id': len(trading_signals),
+                'processing_result': result
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Signal received',
+            'signal_id': len(trading_signals)
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def process_arbitrage_signal(signal_data):
+    """Traite un signal d'arbitrage"""
+    try:
+        symbol = signal_data['symbol']
+        action = signal_data['action']
+        
+        logger.info(f"🎯 Processing arbitrage signal: {action} {symbol}")
+        
+        # Vérifier les opportunités d'arbitrage actuelles
+        current_opportunity = None
+        for opp in arbitrage_opportunities:
+            if opp['symbol'] == symbol.replace('/USDT:USDT', ''):
+                current_opportunity = opp
+                break
+        
+        if not current_opportunity:
+            return {
+                'status': 'warning',
+                'message': f'No current arbitrage opportunity for {symbol}'
+            }
+        
+        # Simuler le traitement du signal
+        if action == 'ENTER':
+            # Logique d'entrée en position d'arbitrage
+            result = {
+                'status': 'success',
+                'action': 'ENTER_ARBITRAGE',
+                'symbol': symbol,
+                'long_exchange': current_opportunity['longExchange'],
+                'short_exchange': current_opportunity['shortExchange'],
+                'expected_revenue': current_opportunity['revenue_annual_pct'],
+                'message': f"Arbitrage position opened: Long {current_opportunity['longExchange']}, Short {current_opportunity['shortExchange']}"
+            }
+            
+        elif action == 'EXIT':
+            # Logique de sortie de position d'arbitrage
+            result = {
+                'status': 'success',
+                'action': 'EXIT_ARBITRAGE',
+                'symbol': symbol,
+                'message': f"Arbitrage position closed for {symbol}"
+            }
+            
+        else:
+            result = {
+                'status': 'warning',
+                'message': f'Unknown action: {action}'
+            }
+        
+        logger.info(f"✅ Signal processed: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Signal processing error: {e}")
+        return {
+            'status': 'error',
+            'message': str(e)
+        }
+
+@app.route('/api/test-endpoints', methods=['GET', 'OPTIONS'])
+def test_endpoints():
+    """Test des endpoints directs des exchanges"""
+    logger.info("📍 TEST ENDPOINTS called")
+    
+    results = {
+        'test_timestamp': datetime.utcnow().isoformat() + 'Z',
+        'binance': {'status': 'testing...'},
+        'bybit': {'status': 'testing...'},
+        'okx': {'status': 'testing...'}
+    }
+    
+    # Test Binance
+    try:
+        binance_data = fetch_binance_funding_direct()
+        results['binance'] = {
+            'status': 'success' if binance_data else 'no_data',
+            'count': len(binance_data),
+            'sample': binance_data[:3] if binance_data else None
+        }
+    except Exception as e:
+        results['binance'] = {
+            'status': 'error',
+            'error': str(e)[:200]
+        }
+    
+    # Test Bybit
+    try:
+        bybit_data = fetch_bybit_funding_direct()
+        results['bybit'] = {
+            'status': 'success' if bybit_data else 'no_data',
+            'count': len(bybit_data),
+            'sample': bybit_data[:3] if bybit_data else None
+        }
+    except Exception as e:
+        results['bybit'] = {
+            'status': 'error',
+            'error': str(e)[:200]
+        }
+    
+    # Test OKX
+    try:
+        okx_data = fetch_okx_funding_direct()
+        results['okx'] = {
+            'status': 'success' if okx_data else 'no_data',
+            'count': len(okx_data),
+            'sample': okx_data[:3] if okx_data else None
+        }
+    except Exception as e:
+        results['okx'] = {
+            'status': 'error',
+            'error': str(e)[:200]
+        }
+    
+    # Résumé global
+    total_success = sum(1 for ex in ['binance', 'bybit', 'okx'] if results[ex]['status'] == 'success')
+    total_data = sum(results[ex].get('count', 0) for ex in ['binance', 'bybit', 'okx'])
+    
+    results['summary'] = {
+        'exchanges_working': total_success,
+        'total_exchanges_tested': 3,
+        'total_funding_rates': total_data,
+        'success_rate': f"{(total_success/3)*100:.1f}%"
+    }
+    
+    return jsonify({
+        'status': 'test_completed',
+        'message': 'Direct exchange APIs testing results',
+        'results': results,
+        'endpoints_tested': [
+            'Binance: https://fapi.binance.com/fapi/v1/fundingRate',
+            'Bybit: https://api.bybit.com/v5/market/funding/history',
+            'OKX: https://www.okx.com/api/v5/public/funding-rate'
+        ],
+        'timestamp': datetime.utcnow().isoformat() + 'Z'
+    })
+
+@app.route('/api/funding-rate/<symbol>/current', methods=['GET', 'OPTIONS'])
+def get_current_funding_rate(symbol):
+    """Récupère le funding rate actuel pour un symbole spécifique"""
+    logger.info(f"📍 CURRENT FUNDING RATE endpoint called for {symbol}")
+    
+    # Nettoyer le symbole
+    clean_symbol = symbol.upper()
+    if not clean_symbol.endswith('USDT'):
+        clean_symbol += 'USDT'
+    
+    results = {}
+    
+    # Test Binance pour ce symbole
+    try:
+        url = "https://fapi.binance.com/fapi/v1/fundingRate"
+        params = {'symbol': clean_symbol}
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                latest = data[-1]  # Dernier funding rate
+                results['binance'] = {
+                    'fundingRate': float(latest.get('fundingRate', 0)),
+                    'fundingTime': latest.get('fundingTime'),
+                    'symbol': latest.get('symbol'),
+                    'status': 'success'
+                }
+            else:
+                results['binance'] = {'status': 'no_data'}
+        else:
+            results['binance'] = {'status': 'error', 'code': response.status_code}
+            
+    except Exception as e:
+        results['binance'] = {'status': 'error', 'error': str(e)[:100]}
+    
+    # Test Bybit pour ce symbole
+    try:
+        url = "https://api.bybit.com/v5/market/funding/history"
+        params = {
+            'category': 'linear',
+            'symbol': clean_symbol,
+            'limit': 1
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'result' in data and 'list' in data['result'] and data['result']['list']:
+                latest = data['result']['list'][0]
+                results['bybit'] = {
+                    'fundingRate': float(latest.get('fundingRate', 0)),
+                    'fundingTime': latest.get('fundingRateTimestamp'),
+                    'symbol': latest.get('symbol'),
+                    'status': 'success'
+                }
+            else:
+                results['bybit'] = {'status': 'no_data'}
+        else:
+            results['bybit'] = {'status': 'error', 'code': response.status_code}
+            
+    except Exception as e:
+        results['bybit'] = {'status': 'error', 'error': str(e)[:100]}
+    
+    # Test OKX pour ce symbole
+    try:
+        # Convertir BTCUSDT en BTC-USDT-SWAP
+        okx_symbol = clean_symbol.replace('USDT', '') + '-USDT-SWAP'
+        
+        url = "https://www.okx.com/api/v5/public/funding-rate"
+        params = {'instId': okx_symbol}
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and data['data']:
+                latest = data['data'][0]
+                results['okx'] = {
+                    'fundingRate': float(latest.get('fundingRate', 0)),
+                    'fundingTime': latest.get('fundingTime'),
+                    'symbol': latest.get('instId'),
+                    'status': 'success'
+                }
+            else:
+                results['okx'] = {'status': 'no_data'}
+        else:
+            results['okx'] = {'status': 'error', 'code': response.status_code}
+            
+    except Exception as e:
+        results['okx'] = {'status': 'error', 'error': str(e)[:100]}
+    
+    # Calculer arbitrage si on a des données
+    arbitrage_opportunity = None
+    
+    working_exchanges = [(ex, data) for ex, data in results.items() 
+                        if data.get('status') == 'success']
+    
+    if len(working_exchanges) >= 2:
+        rates = [(ex, data['fundingRate']) for ex, data in working_exchanges]
+        rates.sort(key=lambda x: x[1])  # Trier par taux
+        
+        min_ex, min_rate = rates[0]
+        max_ex, max_rate = rates[-1]
+        
+        divergence = max_rate - min_rate
+        
+        if abs(divergence) > 0.0001:  # 0.01%
+            commission = 0.0008
+            revenue_8h = abs(divergence) - commission
+            revenue_annual = revenue_8h * 3 * 365 * 100
+            
+            if revenue_annual > 10:
+                arbitrage_opportunity = {
+                    'symbol': clean_symbol,
+                    'long_exchange': min_ex,
+                    'short_exchange': max_ex,
+                    'long_rate': min_rate,
+                    'short_rate': max_rate,
+                    'divergence': abs(divergence),
+                    'divergence_pct': abs(divergence) * 100,
+                    'revenue_annual_pct': revenue_annual,
+                    'profitable': True
+                }
+    
+    return jsonify({
+        'status': 'success',
+        'symbol_requested': symbol,
+        'symbol_processed': clean_symbol,
+        'exchanges': results,
+        'arbitrage_opportunity': arbitrage_opportunity,
+        'next_funding': time_until_funding(),
+        'timestamp': datetime.utcnow().isoformat() + 'Z'
+    })
+
+@app.route('/api/webhook-info', methods=['GET', 'OPTIONS'])
+def get_webhook_info():
+    """Informations pour configurer TradingView"""
+    return jsonify({
+        'webhook_url': f'{request.url_root}webhook/tradingview',
+        'method': 'POST',
+        'content_type': 'application/json',
+        'authentication': {
+            'required': True,
+            'field': 'auth_key',
+            'note': 'Include auth_key in JSON payload'
+        },
+        'required_fields': ['symbol', 'action', 'auth_key'],
+        'optional_fields': ['exchange_long', 'exchange_short', 'quantity', 'strategy'],
+        'example_payload': {
+            'auth_key': 'YOUR_SECRET_KEY_2024',
+            'symbol': 'BTC/USDT:USDT',
+            'action': 'ENTER',
+            'exchange_long': 'binance',
+            'exchange_short': 'bybit',
+            'quantity': 0.1,
+            'strategy': 'arbitrage'
+        },
+        'supported_actions': ['ENTER', 'EXIT', 'BUY', 'SELL', 'CLOSE'],
+        'webhook_security': 'Use HTTPS and keep auth_key secret'
+    })
 
 @app.route('/', methods=['GET', 'OPTIONS'])
 def home():
